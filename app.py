@@ -17,6 +17,42 @@ CORS(app)  # Enable CORS for all routes
 @app.route("/health")
 def health_check():
     return jsonify({"status": "ok"})
+# devolver todos los productos
+@app.route("/allproducts", methods=["GET"])
+def get_all_products():
+    try:
+        response = supabase.table("products").select("*").execute()
+        return jsonify({"products": response.data}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+#crear un producto
+@app.route("/add", methods=["POST"])
+def add_product():
+    print("datos recibidos:", request.get_json())
+
+    try:
+        datos = request.get_json()
+        # Validar datos requeridos
+        if not datos or "name" not in datos or "price" not in datos:
+            return jsonify(
+                {"exito": False, "error": "Faltan campos requeridos: name y price"}
+            ), 400
+
+        datos.pop("id", None)
+        print("datos a insertar:", datos)
+        response = supabase.table("products").insert(datos).execute()
+
+        return jsonify(
+            {
+                "exito": True,
+                "mensaje": "Producto creado exitosamente",
+                "datos": response.data,
+            }
+        ), 200
+    except Exception as e:
+        return jsonify({"exito": False, "error": str(e)}), 500
+
 
 
 # busqueda de productos por categoria
@@ -36,6 +72,7 @@ def search_products():
         max_price = request.args.get("max_price")
 
         # Construir consulta base
+        print("consultando a supabase con ", category, keyword, page, page_size, min_price, max_price)
         query = supabase.table("products").select("*", count="exact")
 
         # Filtro por categoría
@@ -94,8 +131,7 @@ def obtener_producto(id):
         return jsonify({"exito": False, "error": str(e)}), 500
 
 
-# crear producto falta verificar que sea admin
-@app.route("/productos", methods=["POST"])
+@app.route("/products", methods=["POST"])
 def crear_producto():
     try:
         datos = request.get_json()
@@ -106,7 +142,7 @@ def crear_producto():
                 {"exito": False, "error": "Faltan campos requeridos: nombre y precio"}
             ), 400
 
-        response = supabase.table("productos").insert(datos).execute()
+        response = supabase.table("products").insert(datos).execute()
 
         return jsonify(
             {
@@ -119,17 +155,17 @@ def crear_producto():
         return jsonify({"exito": False, "error": str(e)}), 500
 
 
-@app.route("/productos/<int:id>", methods=["PUT"])
+@app.route("/edit/<int:id>", methods=["PUT"])
 def actualizar_producto(id):
     try:
         datos = request.get_json()
-
+        datos.pop("id", None)
         if not datos:
             return jsonify(
                 {"exito": False, "error": "No se enviaron datos para actualizar"}
             ), 400
 
-        response = supabase.table("productos").update(datos).eq("id", id).execute()
+        response = supabase.table("products").update(datos).eq("id", id).execute()
 
         if len(response.data) == 0:
             return jsonify({"exito": False, "error": "Producto no encontrado"}), 404
@@ -145,10 +181,11 @@ def actualizar_producto(id):
         return jsonify({"exito": False, "error": str(e)}), 500
 
 
-@app.route("/productos/<int:id>", methods=["DELETE"])
+@app.route("/delete/<int:id>", methods=["DELETE"])
 def eliminar_producto(id):
+    print("eliminar_producto:", id)
     try:
-        response = supabase.table("productos").delete().eq("id", id).execute()
+        response = supabase.table("products").delete().eq("id", id).execute()
 
         return jsonify(
             {"exito": True, "mensaje": "Producto eliminado exitosamente"}
@@ -156,6 +193,112 @@ def eliminar_producto(id):
     except Exception as e:
         return jsonify({"exito": False, "error": str(e)}), 500
 
+
+@app.route("/reduce-stock", methods=["POST"])
+def reduce_stock():
+    """
+    Payload:
+    {
+      "items": [
+        { "product_id": int, "quantity": int }
+      ]
+    }
+    """
+    data = request.get_json()
+    items = data.get("items") if data else None
+
+    if not items:
+        return jsonify({"error": "Items are required"}), 400
+
+    try:
+        for item in items:
+            product_id = item.get("product_id")
+            quantity = item.get("quantity")
+
+            if not product_id or not quantity or quantity <= 0:
+                return jsonify({"error": "Invalid item format"}), 400
+
+            # Obtener producto
+            response = (
+                supabase
+                .table("products")
+                .select("id, stock")
+                .eq("id", product_id)
+                .execute()
+            )
+
+            if not response.data:
+                return jsonify({"error": f"Product {product_id} not found"}), 404
+
+            current_stock = response.data[0]["stock"]
+
+            if current_stock < quantity:
+                return jsonify({
+                    "error": f"Insufficient stock for product {product_id}"
+                }), 409
+
+            # Reducir stock
+            supabase.table("products").update({
+                "stock": current_stock - quantity
+            }).eq("id", product_id).execute()
+
+        return jsonify({
+            "message": "Stock reduced successfully"
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/restore-stock", methods=["POST"])
+def restore_stock():
+    """
+    Payload:
+    {
+      "items": [
+        { "product_id": int, "quantity": int }
+      ]
+    }
+    """
+    data = request.get_json()
+    items = data.get("items") if data else None
+
+    if not items:
+        return jsonify({"error": "Items are required"}), 400
+
+    try:
+        for item in items:
+            product_id = item.get("product_id")
+            quantity = item.get("quantity")
+
+            if not product_id or not quantity or quantity <= 0:
+                return jsonify({"error": "Invalid item format"}), 400
+
+            # Obtener stock actual
+            response = (
+                supabase
+                .table("products")
+                .select("stock")
+                .eq("id", product_id)
+                .execute()
+            )
+
+            if not response.data:
+                continue  # No rompemos compensación por un producto inexistente
+
+            current_stock = response.data[0]["stock"]
+
+            # Restaurar stock
+            supabase.table("products").update({
+                "stock": current_stock + quantity
+            }).eq("id", product_id).execute()
+
+        return jsonify({
+            "message": "Stock restored successfully"
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
